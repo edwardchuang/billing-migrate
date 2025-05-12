@@ -5,6 +5,7 @@ import argparse
 import logging
 from google.cloud import billing
 from google.cloud import resourcemanager_v3
+from google.cloud.billing_v1.types import BillingAccount
 from google.api_core.exceptions import NotFound
 
 # Configure logging
@@ -127,6 +128,7 @@ def orchestrate_billing_migration(
     target_billing_id: str,
     original_billing_label_key: str,
     dry_run: bool,
+    source_billing_id_override: str | None = None,
 ) -> None:
     """
     Orchestrates the migration of projects to a target billing account,
@@ -141,43 +143,58 @@ def orchestrate_billing_migration(
     moved_projects_count = 0
 
     try:
-        source_billing_accounts_request = billing.ListBillingAccountsRequest()
-        source_billing_accounts_pager = billing_client.list_billing_accounts(request=source_billing_accounts_request)
+        source_billing_accounts_to_process = []
+        if source_billing_id_override:
+            logging.info(f"Processing specified source billing account: {source_billing_id_override}")
+            try:
+                # Ensure the provided source BA exists and is accessible
+                source_ba_request = billing.GetBillingAccountRequest(name=source_billing_id_override)
+                source_ba_details = billing_client.get_billing_account(request=source_ba_request)
+                source_billing_accounts_to_process.append(source_ba_details)
+            except NotFound:
+                logging.error(f"Specified source billing account {source_billing_id_override} not found or not accessible. Aborting.")
+                return
+            except Exception as e:
+                logging.error(f"Error fetching specified source billing account {source_billing_id_override}: {e}. Aborting.")
+                return
+        else:
+            logging.info("Discovering all accessible source billing accounts.")
+            source_billing_accounts_request = billing.ListBillingAccountsRequest()
+            source_billing_accounts_pager = billing_client.list_billing_accounts(request=source_billing_accounts_request)
+            source_billing_accounts_to_process.extend(source_billing_accounts_pager)
 
-        for source_ba in source_billing_accounts_pager:
-            logging.info(f"Checking source billing account: {source_ba.name} ({source_ba.display_name})")
+        for source_ba in source_billing_accounts_to_process:
+            logging.info(f"Processing source billing account: {source_ba.name} ({source_ba.display_name})")
 
-            if source_ba.name == target_billing_id:
-                logging.info(f"Source billing account {source_ba.name} is the target billing account. Skipping projects under it for migration source.")
+            if source_ba.name == target_billing_id: # type: ignore
+                logging.info(f"Source billing account {source_ba.name} is the target billing account. Skipping projects under it for migration source.") # type: ignore
                 continue
 
-            projects_request = billing.ListProjectBillingInfoRequest(name=source_ba.name)
+            projects_request = billing.ListProjectBillingInfoRequest(name=source_ba.name) # type: ignore
             projects_pager = billing_client.list_project_billing_info(request=projects_request)
 
             for project_info in projects_pager:
                 project_id = project_info.project_id
                 original_billing_id = project_info.billing_account_name # This is the current (source) BA
                 processed_projects_count += 1
-
+    
                 logging.info(f"Processing project: {project_id} (currently on BA: {original_billing_id})")
-
+    
                 if original_billing_id == target_billing_id:
                     logging.info(f"Project {project_id} is already on the target billing account {target_billing_id}. Skipping.")
                     continue
-
+    
                 if dry_run:
                     logging.info(f"[DRY RUN] Would label project {project_id} with '{original_billing_label_key}: {original_billing_id}'.")
                     logging.info(f"[DRY RUN] Would move project {project_id} from {original_billing_id} to {target_billing_id}.")
                 else:
                     logging.info(f"Attempting to label project {project_id} with '{original_billing_label_key}: {original_billing_id}'.")
                     update_project_labels(project_client, project_id, original_billing_label_key, original_billing_id)
-                    # Assuming update_project_labels logs errors but doesn't raise them to stop the whole script
-                    # Add a check here if critical, or rely on its logging.
-
+                    
                     logging.info(f"Attempting to move project {project_id} to billing account {target_billing_id}.")
                     move_project_billing_account(billing_client, project_id, target_billing_id)
                     moved_projects_count +=1 # Increment if move_project_billing_account implies success or add better success check
-
+    
     except Exception as e:
         logging.error(f"An unexpected error occurred during migration orchestration: {e}", exc_info=True)
     finally:
@@ -190,6 +207,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Migrate GCP projects to a target billing account and label with original billing ID.")
     parser.add_argument("--target-billing-id", required=True, help="The full ID of the target billing account (e.g., billingAccounts/0X0X0X-0X0X0X-0X0X0X).")
     parser.add_argument("--original-billing-id-label-key", default="original-billing-account-id", help="Label key for storing the original billing ID (default: original-billing-account-id).")
+    parser.add_argument("--source-billing-id", help="Optional. The full ID of a specific source billing account to process (e.g., billingAccounts/0Y0Y0Y-0Y0Y0Y-0Y0Y0Y). If not provided, all accessible billing accounts (excluding the target) will be considered as sources.")
     parser.add_argument("--no-dry-run", action="store_true", help="If set, perform actual changes. Defaults to dry-run mode.")
 
     args = parser.parse_args()
@@ -202,7 +220,8 @@ def main() -> None:
         project_client,
         args.target_billing_id,
         args.original_billing_id_label_key,
-        not args.no_dry_run  # dry_run is True if --no-dry-run is NOT present
+        not args.no_dry_run,  # dry_run is True if --no-dry-run is NOT present
+        args.source_billing_id
     )
 
 if __name__ == '__main__':
