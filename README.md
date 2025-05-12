@@ -2,18 +2,22 @@
 
 ## Overview
 
-This Python script automates the process of migrating Google Cloud Platform (GCP) projects from their current billing accounts to a specified target billing account. As part of the migration, it also labels each moved project with its original billing account ID, providing a clear audit trail.
+This Python script automates the process of migrating Google Cloud Platform (GCP) projects from one or more source billing accounts to a specified target billing account. As part of the migration, it labels each moved project with its original billing account ID.
+
+Crucially, when performing a live migration, the script records all operations (label updates and billing moves) into a timestamped JSON log file. This log file can then be used with the script's `--revert` functionality to undo the performed operations if necessary.
 
 The script is designed with safety in mind and operates in **dry-run mode by default**. This allows you to see what actions would be performed without making any actual changes to your GCP environment. To execute the changes, you must explicitly use the `--no-dry-run` flag.
 
 ## Features
 
 *   **Billing Account Migration**: Moves projects to a new target billing account.
+*   **Source Billing Account Specification**: Option to migrate from a specific source billing account or all accessible ones.
 *   **Original Billing ID Labeling**: Tags projects with a label indicating their original billing account.
+*   **Operation Logging**: Records all migration actions (labeling, billing moves) to a timestamped JSON file when not in dry-run mode.
+*   **Revert Functionality**: Can read a previously generated operations log file to revert the migration actions.
 *   **Dry-Run Mode**: By default, shows intended actions without execution.
 *   **Comprehensive Logging**: Provides detailed logs of its operations.
 *   **Command-Line Interface**: Easy to use with clear arguments.
-
 ## Prerequisites
 
 1.  **Python**: Python 3.8 or higher is recommended.
@@ -45,7 +49,7 @@ The script is designed with safety in mind and operates in **dry-run mode by def
         *   `billing.projects.list` (to list projects under a billing account)
         *   `billing.projects.updateBillingInfo` (to change a project's billing account)
         *   `billing.projects.getBillingInfo` (to check a project's current billing account)
-    *   `roles/resourcemanager.projectIamAdmin` or `roles/owner` on the projects being modified, or a custom role with:
+    *   `roles/resourcemanager.projectAdmin` (or a custom role with equivalent permissions) on the projects being modified, or at a higher level in the hierarchy (folder/organization):
         *   `resourcemanager.projects.get` (to get project details for labels)
         *   `resourcemanager.projects.update` (to update project labels)
 
@@ -57,13 +61,25 @@ The script is executed from the command line.
 
 ### Command-Line Arguments
 
-*   `--target-billing-id` (Required): The full ID of the target billing account where projects should be moved (e.g., `billingAccounts/0X0X0X-0X0X0X-0X0X0X`).
+The script uses mutually exclusive arguments for actions: `--migrate` or `--revert`.
+
+**Common Arguments:**
+*   `--no-dry-run` (Optional Flag): If present, the script will perform actual changes (applies to both migration and revert). **If omitted, the script runs in dry-run mode.**
+
+**Migration Specific Arguments (used with `--migrate`):**
+*   `--migrate` (Action Flag): Specifies that a billing migration should be performed.
+*   `--target-billing-id` (Required with `--migrate`): The full ID of the target billing account where projects should be moved (e.g., `billingAccounts/0X0X0X-0X0X0X-0X0X0X`).
 *   `--original-billing-id-label-key` (Optional): The label key to use for storing the original billing ID. Defaults to `original-billing-account-id`.
-*   `--no-dry-run` (Optional Flag): If present, the script will perform actual changes. **If omitted, the script runs in dry-run mode.**
+*   `--source-billing-id` (Optional): The full ID of a specific source billing account to process (e.g., `billingAccounts/0Y0Y0Y-0Y0Y0Y-0Y0Y0Y`). If not provided, all accessible billing accounts (excluding the target) will be considered as sources.
+
+**Revert Specific Arguments (used with `--revert`):**
+*   `--revert LOG_FILE_PATH` (Action Flag & Value): Specifies that operations from the given log file should be reverted. `LOG_FILE_PATH` is the path to the JSON log file generated during a previous migration.
 
 ### Examples
 
-1.  **Dry Run (Recommended First Step)**:
+#### Migration Examples
+
+1.  **Dry Run Migration (Recommended First Step)**:
     This command will simulate the migration, showing which projects would be labeled and moved, without making any actual changes.
 
     ```bash
