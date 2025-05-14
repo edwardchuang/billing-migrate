@@ -11,6 +11,7 @@ from google.cloud import billing
 from google.cloud import resourcemanager_v3
 # from google.cloud.billing_v1.types import BillingAccount # Not directly used, can be removed if not needed elsewhere
 from google.api_core.exceptions import NotFound
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -35,6 +36,8 @@ def sanitize_label_value(value: str) -> str:
     # Billing account IDs (after prefix removal and lowercasing) typically only contain
     # hex characters and hyphens, which are valid in labels.
     # Ensure it only contains allowed characters (more robustly: re.sub(r'[^a-z0-9_-]', '_', sanitized))
+    sanitized = re.sub(r'[^a-z0-9_-]', '_', sanitized)
+
     # Truncate to 63 characters
     return sanitized[:63]
 
@@ -187,6 +190,7 @@ def orchestrate_billing_migration(
     project_client: resourcemanager_v3.ProjectsClient,
     target_billing_id: str,
     original_billing_label_key: str,
+    original_billing_display_name_label_key: str, # New parameter
     dry_run: bool,
     source_billing_id_override: str | None = None,
     operations_log_list: Optional[List[Dict[str, Any]]] = None,
@@ -244,6 +248,7 @@ def orchestrate_billing_migration(
                 project_count_in_ba +=1
                 project_id = project_info.project_id
                 original_billing_id = project_info.billing_account_name # This is the current (source) BA
+                original_billing_display_name = source_ba.display_name # Get display name from the source_ba object
                 processed_projects_count += 1
     
                 # Detailed operational logging - keep as logging.info
@@ -255,12 +260,14 @@ def orchestrate_billing_migration(
                     continue
     
                 if dry_run:
-                    print(f"    -> [DRY RUN] Label: '{original_billing_label_key}: {original_billing_id}'.")
+                    print(f"    -> [DRY RUN] Label ID: '{original_billing_label_key}: {sanitize_label_value(original_billing_id)}'.")
+                    print(f"    -> [DRY RUN] Label Name: '{original_billing_display_name_label_key}: {sanitize_label_value(original_billing_display_name)}'.")
                     print(f"    -> [DRY RUN] Move: {original_billing_id} -> {target_billing_id}.")
                     potential_moves_count +=1
                 else:
                     sanitized_original_ba_id_for_label = sanitize_label_value(original_billing_id)
-                    # Detailed action logging - keep as logging.info
+                    sanitized_original_ba_display_name_for_label = sanitize_label_value(original_billing_display_name)
+
                     print(f"    -> Labeling: '{original_billing_label_key}: {sanitized_original_ba_id_for_label}' (from BA: {original_billing_id}).")
                     update_project_labels(
                         project_client,
@@ -269,7 +276,17 @@ def orchestrate_billing_migration(
                         sanitized_original_ba_id_for_label, # Use sanitized value for the label
                         operations_recorder=operations_log_list
                     ) # Logging for success/failure is within update_project_labels
-                    
+
+                    print(f"    -> Labeling Display Name: '{original_billing_display_name_label_key}: {sanitized_original_ba_display_name_for_label}' (from BA Display Name: {original_billing_display_name}).")
+                    update_project_labels(
+                        project_client,
+                        project_id,
+                        original_billing_display_name_label_key,
+                        sanitized_original_ba_display_name_for_label,
+                        operations_recorder=operations_log_list
+                    )
+
+
                     print(f"    -> Moving to BA: {target_billing_id}.")
                     move_successful = move_project_billing_account(
                         billing_client,
@@ -383,6 +400,7 @@ def main() -> None:
     # Argument parsing (no changes to logging here, it's standard)
     parser = argparse.ArgumentParser(description="Migrate GCP projects to a target billing account and label with original billing ID.")
     parser.add_argument("--target-billing-id", required=True, help="The full ID of the target billing account (e.g., billingAccounts/0X0X0X-0X0X0X-0X0X0X).")
+    parser.add_argument("--original-billing-display-name-label-key", default="orig-billing-name", help="Label key for storing the original billing account's display name (default: orig-billing-name).")
     parser.add_argument("--original-billing-id-label-key", default="orig-billing", help="Label key for storing the original billing ID (default: orig-billing).")
     parser.add_argument("--source-billing-id", help="Optional. The full ID of a specific source billing account to process (e.g., billingAccounts/0Y0Y0Y-0Y0Y0Y-0Y0Y0Y). If not provided, all accessible billing accounts (excluding the target) will be considered as sources.")
     parser.add_argument("--no-dry-run", action="store_true", help="If set, perform actual changes (applies to both migration and revert). Defaults to dry-run mode.")
@@ -401,8 +419,9 @@ def main() -> None:
     if args.revert:
         if args.target_billing_id or \
            args.original_billing_id_label_key != parser.get_default("original_billing_id_label_key") or \
+           args.original_billing_display_name_label_key != parser.get_default("original_billing_display_name_label_key") or \
            args.source_billing_id:
-            parser.error("--revert option cannot be used with migration-specific options like --target-billing-id, --original-billing-id-label-key, or --source-billing-id.")
+            parser.error("--revert option cannot be used with migration-specific options like --target-billing-id, --original-billing-id-label-key, --original-billing-display-name-label-key, or --source-billing-id.")
         print(f"Starting revert process using log file: {args.revert}")
         handle_revert_operations(args.revert, billing_client, project_client, is_dry_run)
     elif args.migrate:
@@ -426,6 +445,7 @@ def main() -> None:
             project_client,
             args.target_billing_id,
             args.original_billing_id_label_key,
+            args.original_billing_display_name_label_key,
             is_dry_run,
             args.source_billing_id,
             operations_log_list=operations_to_log # Pass the list (or None if dry_run/dir error)
