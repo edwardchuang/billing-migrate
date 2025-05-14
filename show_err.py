@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+import os
 import logging
 import argparse
 
@@ -8,6 +9,8 @@ from google.api_core.exceptions import NotFound, GoogleAPICallError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+ERROR_PROJECTS_LOG_FILE = "projects_with_billing_issues.log"
 
 def find_projects_with_billing_info_issues(
     billing_client: billing.CloudBillingClient,
@@ -25,6 +28,7 @@ def find_projects_with_billing_info_issues(
     """
     problematic_projects_found = 0
     processed_projects_count = 0
+    error_project_ids = [] # List to store IDs of projects with errors
 
     try:
         billing_accounts_to_process = []
@@ -78,9 +82,11 @@ def find_projects_with_billing_info_issues(
                     # print(f"  Project {project_id}: Billing info accessible.")
                 except NotFound:
                     print(f"  Project {project_id}: UNABLE TO GET BILLING INFO (NotFound - project or its billingInfo sub-resource may be missing/inaccessible).")
+                    error_project_ids.append(project_id)
                     problematic_projects_found += 1
                 except Exception as e:
                     print(f"  Project {project_id}: UNABLE TO GET BILLING INFO (Error: {e}).")
+                    error_project_ids.append(project_id)
                     problematic_projects_found += 1
             
             if not project_found_in_ba:
@@ -88,6 +94,15 @@ def find_projects_with_billing_info_issues(
 
     except Exception as e:
         logging.error(f"An unexpected error occurred during the scan: {e}", exc_info=True)
+    finally:
+        if error_project_ids:
+            try:
+                with open(ERROR_PROJECTS_LOG_FILE, 'w') as f:
+                    for pid in error_project_ids:
+                        f.write(f"{pid}\n")
+                print(f"\nList of project IDs with billing issues saved to: {ERROR_PROJECTS_LOG_FILE}")
+            except IOError as e:
+                logging.error(f"Could not write error projects log file: {e}")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scan GCP projects for billing info accessibility issues.")
