@@ -92,7 +92,7 @@ def update_project_labels(
     except NotFound:
         logging.error(f"  Project {project_id}: Not found during label update.")
     except Exception as e:
-        logging.error(f"  Project {project_id}: Error during label update: {e}")
+        logging.error(f"  Project {project_id}: Error during label update: {e}", exc_info=True)
 
 # (This function might be less directly used or adapted if orchestration handles iteration)
 def list_billing_accounts(
@@ -148,19 +148,19 @@ def move_project_billing_account(
     """
 
     try:
-        project_billing_info_name = f"projects/{project_id}/billingInfo" # Corrected resource name
+        project_billing_info_name = f"projects/{project_id}" # Corrected resource name
         current_info_request = billing.GetProjectBillingInfoRequest(name=project_billing_info_name)
         current_info = billing_client.get_project_billing_info(request=current_info_request)
         print(f"  {project_id}: Current BA: {current_info.billing_account_name}.")
 
         if current_info.billing_account_name == new_billing_account_name:
             print(f"  {project_id}: Already on target BA {new_billing_account_name} (no move).")
-            return
+            return True # Indicate success as it's already in the desired state
 
         # Construct the ProjectBillingInfo object with the desired state
-        project_billing_info_update = billing.ProjectBillingInfo(
-            name=project_billing_info_name, # Corrected resource name
-            billing_account_name=new_billing_account_name, # Pass the string directly
+        project_billing_info_update = billing.UpdateProjectBillingInfoRequest(
+            name=project_billing_info_name,
+            project_billing_info=billing.ProjectBillingInfo(billing_account_name=new_billing_account_name),
         )
         # Pass the ProjectBillingInfo object directly as the request
         updated_info = billing_client.update_project_billing_info(request=project_billing_info_update)
@@ -179,14 +179,7 @@ def move_project_billing_account(
         logging.error(f"  Project {project_id}: Or its billing info not found during billing move.")
         return False
     except Exception as e:
-        logging.error(f"  Project {project_id}: Error during billing move.")
-        logging.error(f"    Exception type: {type(e)}")
-        logging.error(f"    Exception details: {e}")
-        # Google API call errors often have more specific details
-        if hasattr(e, 'errors') and e.errors: # type: ignore
-            logging.error(f"    API Errors: {e.errors}") # type: ignore
-        if hasattr(e, 'message') and e.message: # type: ignore
-            logging.error(f"    API Message: {e.message}") # type: ignore
+        logging.error(f"  Project {project_id}: Error during billing move: {e}", exc_info=True)
         return False
     return True
 def orchestrate_billing_migration(
