@@ -157,11 +157,13 @@ def move_project_billing_account(
             print(f"  {project_id}: Already on target BA {new_billing_account_name} (no move).")
             return
 
-        update_request = billing.UpdateProjectBillingInfoRequest(
+        # Construct the ProjectBillingInfo object with the desired state
+        project_billing_info_update = billing.ProjectBillingInfo(
             name=project_billing_info_name, # Corrected resource name
-            project_billing_info={"billing_account_name": new_billing_account_name},
+            billing_account_name=new_billing_account_name, # Pass the string directly
         )
-        updated_info = billing_client.update_project_billing_info(request=update_request)
+        # Pass the ProjectBillingInfo object directly as the request
+        updated_info = billing_client.update_project_billing_info(request=project_billing_info_update)
         print(f"  {project_id}: Moved to BA {updated_info.billing_account_name} (API).")
 
         if operations_recorder is not None:
