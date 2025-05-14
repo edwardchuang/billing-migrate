@@ -18,6 +18,26 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 LOG_FILE_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 OPERATIONS_LOG_DIR = "migration_logs"
 
+def sanitize_label_value(value: str) -> str:
+    """
+    Sanitizes a string to be a valid GCP label value.
+    Label values can only contain lowercase letters, numeric characters,
+    underscores, and dashes. They can be at most 63 characters long.
+    """
+    if not isinstance(value, str):
+        return "" # Or raise an error, depending on desired strictness
+    # Convert to lowercase
+    # get the string truncated by "/" of value
+    if "/" in value:
+        value = value.split("/")[1]
+    # Convert to lowercase
+    sanitized = value.lower()
+    # Replace characters not allowed in label values (e.g., '/')
+    sanitized = sanitized.replace("/", "_")
+    # Ensure it only contains allowed characters (more robustly: re.sub(r'[^a-z0-9_-]', '_', sanitized))
+    # Truncate to 63 characters
+    return sanitized[:63]
+
 # update a label to a project, with a given billing account id
 def update_project_labels(
     project_client: resourcemanager_v3.ProjectsClient,
@@ -232,13 +252,14 @@ def orchestrate_billing_migration(
                     print(f"    -> [DRY RUN] Move: {original_billing_id} -> {target_billing_id}.")
                     potential_moves_count +=1
                 else:
+                    sanitized_original_ba_id_for_label = sanitize_label_value(original_billing_id)
                     # Detailed action logging - keep as logging.info
-                    print(f"    -> Labeling: '{original_billing_label_key}: {original_billing_id}'.")
+                    print(f"    -> Labeling: '{original_billing_label_key}: {sanitized_original_ba_id_for_label}' (from BA: {original_billing_id}).")
                     update_project_labels(
                         project_client,
                         project_id,
                         original_billing_label_key,
-                        original_billing_id,
+                        sanitized_original_ba_id_for_label, # Use sanitized value for the label
                         operations_recorder=operations_log_list
                     ) # Logging for success/failure is within update_project_labels
                     
@@ -354,7 +375,7 @@ def main() -> None:
     # Argument parsing (no changes to logging here, it's standard)
     parser = argparse.ArgumentParser(description="Migrate GCP projects to a target billing account and label with original billing ID.")
     parser.add_argument("--target-billing-id", required=True, help="The full ID of the target billing account (e.g., billingAccounts/0X0X0X-0X0X0X-0X0X0X).")
-    parser.add_argument("--original-billing-id-label-key", default="original-billing-account-id", help="Label key for storing the original billing ID (default: original-billing-account-id).")
+    parser.add_argument("--original-billing-id-label-key", default="orig-billing", help="Label key for storing the original billing ID (default: orig-billing).")
     parser.add_argument("--source-billing-id", help="Optional. The full ID of a specific source billing account to process (e.g., billingAccounts/0Y0Y0Y-0Y0Y0Y-0Y0Y0Y). If not provided, all accessible billing accounts (excluding the target) will be considered as sources.")
     parser.add_argument("--no-dry-run", action="store_true", help="If set, perform actual changes (applies to both migration and revert). Defaults to dry-run mode.")
 
