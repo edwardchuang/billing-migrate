@@ -97,7 +97,7 @@ def find_projects_with_billing_info_issues(
     finally:
         if error_project_ids:
             try:
-                with open(ERROR_PROJECTS_LOG_FILE, 'w') as f:
+                with open(ERROR_PROJECTS_LOG_FILE, 'a') as f:
                     for pid in error_project_ids:
                         f.write(f"{pid}\n")
                 print(f"\nList of project IDs with billing issues saved to: {ERROR_PROJECTS_LOG_FILE}")
