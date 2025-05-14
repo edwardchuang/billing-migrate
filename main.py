@@ -24,16 +24,16 @@ def sanitize_label_value(value: str) -> str:
     Label values can only contain lowercase letters, numeric characters,
     underscores, and dashes. They can be at most 63 characters long.
     """
+    billing_prefix = "billingaccounts/"
     if not isinstance(value, str):
         return "" # Or raise an error, depending on desired strictness
-    # Convert to lowercase
-    # get the string truncated by "/" of value
-    if "/" in value:
-        value = value.split("/")[1]
-    # Convert to lowercase
+
     sanitized = value.lower()
-    # Replace characters not allowed in label values (e.g., '/')
-    sanitized = sanitized.replace("/", "_")
+    if sanitized.startswith(billing_prefix):
+        sanitized = sanitized[len(billing_prefix):]
+    
+    # Billing account IDs (after prefix removal and lowercasing) typically only contain
+    # hex characters and hyphens, which are valid in labels.
     # Ensure it only contains allowed characters (more robustly: re.sub(r'[^a-z0-9_-]', '_', sanitized))
     # Truncate to 63 characters
     return sanitized[:63]
@@ -137,10 +137,13 @@ def move_project_billing_account(
     project_id: str,
     new_billing_account_name: str,
     operations_recorder: Optional[List[Dict[str, Any]]] = None,
-) -> None:
+) -> bool: # Return True on success, False on failure
     """Moves a project to a new billing account.
 
     Args:
+        billing_client: An initialized billing.CloudBillingClient.
+        project_id: The ID of the project to move.
+        new_billing_account_name: The full resource name of the target billing account.
         operations_recorder: Optional list to record the operation details for revert.
     """
 
@@ -172,9 +175,18 @@ def move_project_billing_account(
             })
     except NotFound:
         logging.error(f"  Project {project_id}: Or its billing info not found during billing move.")
+        return False
     except Exception as e:
-        logging.error(f"  Project {project_id}: Error during billing move: {e}")
-    
+        logging.error(f"  Project {project_id}: Error during billing move.")
+        logging.error(f"    Exception type: {type(e)}")
+        logging.error(f"    Exception details: {e}")
+        # Google API call errors often have more specific details
+        if hasattr(e, 'errors') and e.errors: # type: ignore
+            logging.error(f"    API Errors: {e.errors}") # type: ignore
+        if hasattr(e, 'message') and e.message: # type: ignore
+            logging.error(f"    API Message: {e.message}") # type: ignore
+        return False
+    return True
 def orchestrate_billing_migration(
     billing_client: billing.CloudBillingClient,
     project_client: resourcemanager_v3.ProjectsClient,
@@ -264,14 +276,15 @@ def orchestrate_billing_migration(
                     ) # Logging for success/failure is within update_project_labels
                     
                     print(f"    -> Moving to BA: {target_billing_id}.")
-                    move_project_billing_account(
+                    move_successful = move_project_billing_account(
                         billing_client,
                         project_id,
                         target_billing_id,
                         operations_recorder=operations_log_list
                     ) # Logging for success/failure is within move_project_billing_account
-                    moved_projects_count +=1 # Incremented if no exception from move_project_billing_account
-            
+                    if move_successful:
+                        moved_projects_count +=1
+
             if project_count_in_ba == 0:
                 print(f"  No projects on this BA.")
 
@@ -358,11 +371,11 @@ def handle_revert_operations(
             else:
                 # Detailed action logging - keep as logging.info
                 print(f"    -> Revert Move to BA: {ba_to_revert_to}.")
-                move_project_billing_account(billing_client, project_id, ba_to_revert_to, operations_recorder=None) # No recorder for revert
-            reverted_count +=1
+                revert_move_successful = move_project_billing_account(billing_client, project_id, ba_to_revert_to, operations_recorder=None) # No recorder for revert
+                if revert_move_successful:
+                    reverted_count +=1
         else:
             logging.warning(f"Unknown operation type '{op_type}' in log for project {project_id}. Skipping.")
-
     print(f"\n--- Revert Process Summary ---")
     print(f"Revert process from log file '{log_file_path}' finished.")
     if dry_run:
